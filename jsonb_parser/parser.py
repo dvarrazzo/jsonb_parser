@@ -21,19 +21,18 @@ JScalar = Union[JNull, JBool, JNumeric, JString]
 
 
 def parse_jsonb(data: Buffer) -> Any:
-    v = JsonbParseVisitor(data)
-    v.visit()
+    v = JsonbParser(data)
+    v.parse()
     return v.object
 
 
-class JsonbParseVisitor:
+class JsonbParser:
     def __init__(self, data: Buffer):
         self.data = data
         self._object: Any = None
         self._parsed = False
-        self._pos = 0
 
-    def visit(self) -> None:
+    def parse(self) -> None:
         """Parse the input data.
 
         The result will be found in `self.object`.
@@ -50,7 +49,7 @@ class JsonbParseVisitor:
         return self._object
 
     def _parse_root(self) -> Any:
-        jc = self._get32_at(0)
+        jc = self._get32(0)
         if jc_is_array(jc):
             rv = self._parse_array(jc, 0)
             return rv[0] if jc_is_scalar(jc) else rv
@@ -80,7 +79,7 @@ class JsonbParseVisitor:
         wpad = pos % 4  # would you like some padding?
         if wpad:
             pos += 4 - wpad
-        jc = self._get32_at(pos)
+        jc = self._get32(pos)
         if jc_is_array(jc):
             return self._parse_array(jc, pos)
         elif jc_is_object(jc):
@@ -98,7 +97,7 @@ class JsonbParseVisitor:
         vstart = pos + 4 * size  # where are the values, past the jentries
         voff = 0
         for i in range(size):
-            je = self._get32_at(pos + 4 * i)
+            je = self._get32(pos + 4 * i)
 
             # calculate the value length
             # if has_off, flen is the offset from vstart, not the length
@@ -122,7 +121,7 @@ class JsonbParseVisitor:
         vstart = pos + 4 * size * 2  # where are the values, past the jentries
         voff = 0
         for i in range(size * 2):
-            je = self._get32_at(pos + 4 * i)
+            je = self._get32(pos + 4 * i)
 
             # calculate the value length
             # if has_off, flen is the offset from vstart, not the length
@@ -142,26 +141,15 @@ class JsonbParseVisitor:
     def _parse_numeric(self, je: int, pos: int, length: int) -> JNumeric:
         raise NotImplementedError("numeric parsing")
 
-    def _get32(self) -> int:
-        """Parse an uint32 from the current position.
+    def _get32(self, pos: int) -> int:
+        """Parse an uint32 from the buffer.
 
-        Advance the current position after parsing.
-        """
-        val = _unpack_uint4(self.data, self._pos)[0]
-        self._pos += 4
-        return val
+        Note: parsing little endian here. I assume the bytes order depends on the
+        server machine architecture.
 
-    def _get32_at(self, pos: int) -> int:
-        """Parse an uint32 from an arbitrary position.
-
-        *Don't* advance the current position after parsing.
+        TODO: Sniff it from the root container.
         """
         return _unpack_uint4(self.data, pos)[0]
-
-
-def is_container(val: int) -> bool:
-    """True if a JEntry header represents a container (array or object)."""
-    return (val & JENTRY_TYPEMASK) == JENTRY_ISCONTAINER
 
 
 # JsonEntry parsing
