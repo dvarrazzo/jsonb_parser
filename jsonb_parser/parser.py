@@ -105,7 +105,20 @@ class JsonbParseVisitor:
         return res
 
     def _parse_object(self, jc: int, pos: int) -> JObject:
-        raise NotImplementedError("object parsing")
+        size = jc_size(jc)
+        if not size:
+            return {}
+
+        res = []
+        pos += 4  # past the container head
+        valpos = pos + 4 * size * 2  # where are the values, past the jentries
+        for i in range(size * 2):
+            je = self._get32_at(pos + 4 * i)
+            obj = self._parse_entry(je, valpos)
+            res.append(obj)
+            valpos += jbe_offlenfld(je)
+
+        return dict(zip(res[:size], res[size:]))
 
     def _parse_string(self, je: int, pos: int) -> JString:
         length = jbe_offlenfld(je)

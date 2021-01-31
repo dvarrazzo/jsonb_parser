@@ -31,6 +31,16 @@ def test_array(conn, value):
     assert got == value
 
 
+@pytest.mark.parametrize(
+    "value", ["{}", '{"a": "bb"}', '{"a": ["b", "c"]}', '{"a": {"b": "c"}}']
+)
+def test_object(conn, value):
+    cur = conn.cursor()
+    value = eval(value)
+    got = roundtrip(cur, value)
+    assert got == value
+
+
 def roundtrip(cur, obj):
     cur.execute("select %s::jsonb::bytea", (json.dumps(obj),))
     data = cur.fetchone()[0]
