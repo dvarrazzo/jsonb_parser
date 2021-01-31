@@ -59,7 +59,7 @@ class JsonbParseVisitor:
         else:
             raise ValueError(f"bad root header: {jc}")
 
-    def _parse_entry(self, je: int, pos: int) -> Any:
+    def _parse_entry(self, je: int, pos: int, length: int) -> Any:
         typ = jbe_type(je)
         if typ == JENTRY_ISNULL:
             return None
@@ -68,9 +68,9 @@ class JsonbParseVisitor:
         elif typ == JENTRY_ISBOOL_FALSE:
             return False
         elif typ == JENTRY_ISSTRING:
-            return self._parse_string(je, pos)
+            return self._parse_string(je, pos, length)
         elif typ == JENTRY_ISNUMERIC:
-            return self._parse_numeric(je, pos)
+            return self._parse_numeric(je, pos, length)
         elif typ == JENTRY_ISCONTAINER:
             return self._parse_container(je, pos)
         else:
@@ -95,12 +95,20 @@ class JsonbParseVisitor:
 
         res = []
         pos += 4  # past the container head
-        valpos = pos + 4 * size  # where are the values, past the jentries
+        vstart = pos + 4 * size  # where are the values, past the jentries
+        voff = 0
         for i in range(size):
             je = self._get32_at(pos + 4 * i)
-            obj = self._parse_entry(je, valpos)
+
+            # calculate the value length
+            # if has_off, flen is the offset from vstart, not the length
+            flen = jbe_offlenfld(je)
+            if jbe_has_off(je):
+                flen -= voff
+
+            obj = self._parse_entry(je, vstart + voff, flen)
             res.append(obj)
-            valpos += jbe_offlenfld(je)
+            voff += flen
 
         return res
 
@@ -111,20 +119,27 @@ class JsonbParseVisitor:
 
         res = []
         pos += 4  # past the container head
-        valpos = pos + 4 * size * 2  # where are the values, past the jentries
+        vstart = pos + 4 * size * 2  # where are the values, past the jentries
+        voff = 0
         for i in range(size * 2):
             je = self._get32_at(pos + 4 * i)
-            obj = self._parse_entry(je, valpos)
+
+            # calculate the value length
+            # if has_off, flen is the offset from vstart, not the length
+            flen = jbe_offlenfld(je)
+            if jbe_has_off(je):
+                flen -= voff
+
+            obj = self._parse_entry(je, vstart + voff, flen)
             res.append(obj)
-            valpos += jbe_offlenfld(je)
+            voff += flen
 
         return dict(zip(res[:size], res[size:]))
 
-    def _parse_string(self, je: int, pos: int) -> JString:
-        length = jbe_offlenfld(je)
+    def _parse_string(self, je: int, pos: int, length: int) -> JString:
         return _decode_utf8(self.data[pos : pos + length])[0]
 
-    def _parse_numeric(self, je: int, pos: int) -> JNumeric:
+    def _parse_numeric(self, je: int, pos: int, length: int) -> JNumeric:
         raise NotImplementedError("numeric parsing")
 
     def _get32(self) -> int:
