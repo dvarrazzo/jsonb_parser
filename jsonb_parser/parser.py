@@ -27,6 +27,10 @@ def parse_jsonb(data: Buffer) -> Any:
 
 
 class JsonbParser:
+    """
+    An object to parse a buffer containing a jsonb data.
+    """
+
     def __init__(self, data: Buffer):
         self.data = data
         self._object: Any = None
@@ -49,6 +53,11 @@ class JsonbParser:
         return self._object
 
     def _parse_root(self) -> Any:
+        """Parse and return root element of the data.
+
+        The root element is always a container. If the json is a scalar, it is
+        represented as a 1-elem array, with the "scalar" bit set.
+        """
         jc = self._get32(0)
         if jc_is_array(jc):
             rv = self._parse_array(jc, 0)
@@ -56,26 +65,22 @@ class JsonbParser:
         elif jc_is_object(jc):
             return self._parse_object(jc, 0)
         else:
-            raise ValueError(f"bad root header: {jc}")
-
-    def _parse_entry(self, je: int, pos: int, length: int) -> Any:
-        typ = jbe_type(je)
-        if typ == JENTRY_ISNULL:
-            return None
-        elif typ == JENTRY_ISBOOL_TRUE:
-            return True
-        elif typ == JENTRY_ISBOOL_FALSE:
-            return False
-        elif typ == JENTRY_ISSTRING:
-            return self._parse_string(je, pos, length)
-        elif typ == JENTRY_ISNUMERIC:
-            return self._parse_numeric(je, pos, length)
-        elif typ == JENTRY_ISCONTAINER:
-            return self._parse_container(je, pos)
-        else:
-            raise ValueError(f"bad entry header: {je}")
+            raise ValueError(f"bad root header: 0x{jc:08x}")
 
     def _parse_container(self, je: int, pos: int) -> JContainer:
+        """Parse and return a container found at pos in the data.
+
+        A container is composed by a 4-aligned JsonContainer header with its
+        type and length, followed by a number of JsonEntries, then the data for
+        the variable-length entries (strings, numbers, other containers).
+
+        Every entry describes the type of the value and either its length or
+        the offset of its end from the start of the values area (the reason is
+        that, in order to look up an element, storing only lengths has o(n)
+        behaviour, storing only offset has o(1) behaviour but is harder to
+        compress). Currently the server stores one offset each stride of 32
+        items, but the client doesn't make any assumption about it.
+        """
         wpad = pos % 4  # would you like some padding?
         if wpad:
             pos += 4 - wpad
@@ -85,9 +90,14 @@ class JsonbParser:
         elif jc_is_object(jc):
             return self._parse_object(jc, pos)
         else:
-            raise ValueError(f"bad container header: {jc}")
+            raise ValueError(f"bad container header: 0x{jc:08x}")
 
     def _parse_array(self, jc: int, pos: int) -> JArray:
+        """Parse an array and return it as a Python list.
+
+        An array is a container with a sequence of JEntry representing its
+        elements in the order they appear.
+        """
         size = jc_size(jc)
         if not size:
             return []
@@ -112,6 +122,13 @@ class JsonbParser:
         return res
 
     def _parse_object(self, jc: int, pos: int) -> JObject:
+        """Parse an object and return it as a Python dict.
+
+        An object is represented as a container with 2 * size JEntries. The
+        first half are the keys, ordered in quasi-lexicographical order (first
+        by length, then by content), the second half are the values, in the
+        same order of the keys.
+        """
         size = jc_size(jc)
         if not size:
             return {}
@@ -135,21 +152,52 @@ class JsonbParser:
 
         return dict(zip(res[:size], res[size:]))
 
-    def _parse_string(self, je: int, pos: int, length: int) -> JString:
+    def _parse_entry(self, je: int, pos: int, length: int) -> Any:
+        """Parse a JsonEntry into a Python value."""
+        typ = jbe_type(je)
+        if typ == JENTRY_ISSTRING:
+            return self._parse_string(pos, length)
+        elif typ == JENTRY_ISNUMERIC:
+            return self._parse_numeric(pos, length)
+        elif typ == JENTRY_ISCONTAINER:
+            return self._parse_container(je, pos)
+        elif typ == JENTRY_ISNULL:
+            return None
+        elif typ == JENTRY_ISBOOL_TRUE:
+            return True
+        elif typ == JENTRY_ISBOOL_FALSE:
+            return False
+        else:
+            raise ValueError(f"bad entry header: 0x{je:08x}")
+
+    def _parse_string(self, pos: int, length: int) -> JString:
+        """Parse a chunk of data into a Python string.
+
+        JSON strings are utf-8. Note that we don't use the method `.decode()`
+        here in order to support the memoryview object, which is more efficient
+        than bytes/bytearray as it doesn't require a copy to be sliced.
+        """
         return _decode_utf8(self.data[pos : pos + length])[0]
 
-    def _parse_numeric(self, je: int, pos: int, length: int) -> JNumeric:
+    def _parse_numeric(self, pos: int, length: int) -> JNumeric:
+        """Parse a chunk of data into a Python numeric value."""
         raise NotImplementedError("numeric parsing")
 
     def _get32(self, pos: int) -> int:
-        """Parse an uint32 from the buffer.
+        """Parse an uint32 from a position in the buffer.
 
-        Note: parsing little endian here. I assume the bytes order depends on the
-        server machine architecture.
+        Note: parsing little endian here. I assume the bytes order depends on
+        the server machine architecture.
 
         TODO: Sniff it from the root container.
         """
         return _unpack_uint4(self.data, pos)[0]
+
+
+# The following definitions are converted from Postgres source, and allow
+# bit-level access to the JsonEntry and JsonContainer values. See
+# https://github.com/postgres/postgres/blob/master/src/include/utils/jsonb.h
+# for all the details.
 
 
 # JsonEntry parsing
@@ -210,7 +258,7 @@ JEDetails = namedtuple("JEDetails", "type offlen hasoff")
 
 
 def parse_je(je: int) -> JEDetails:
-    """Debug helper to check what's in a JEntry"""
+    """Debug helper to check what's in a JsonEntry."""
     typ = {
         JENTRY_ISSTRING: "str",
         JENTRY_ISNUMERIC: "num",
@@ -230,22 +278,22 @@ JB_FARRAY = 0x40000000
 
 
 def jc_size(val: int) -> int:
-    """Return the size a JsonContainer"""
+    """Return the size a JsonContainer."""
     return val & JB_CMASK
 
 
 def jc_is_scalar(val: int) -> bool:
-    """Return True if a JsonContainer header represents a scalar"""
+    """Return True if a JsonContainer header represents a scalar."""
     return val & JB_FSCALAR != 0
 
 
 def jc_is_object(val: int) -> bool:
-    """Return True if a JsonContainer header represents an object"""
+    """Return True if a JsonContainer header represents an object."""
     return val & JB_FOBJECT != 0
 
 
 def jc_is_array(val: int) -> bool:
-    """Return True if a JsonContainer header represents an array"""
+    """Return True if a JsonContainer header represents an array."""
     return val & JB_FARRAY != 0
 
 
@@ -253,7 +301,7 @@ JCDetails = namedtuple("JCDetails", "type size scal")
 
 
 def parse_jc(jc: int) -> JCDetails:
-    """Debug helper to check what's in a JsonContainer"""
+    """Debug helper to check what's in a JsonContainer."""
     if jc_is_array(jc):
         typ = "array"
     if jc_is_object(jc):
