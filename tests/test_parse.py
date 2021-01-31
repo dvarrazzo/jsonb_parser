@@ -51,6 +51,7 @@ def test_object(conn, value):
     assert got == value
 
 
+@pytest.mark.slow
 def test_random(conn):
     value = JsonFaker().random_json()
     got = roundtrip(conn, value)

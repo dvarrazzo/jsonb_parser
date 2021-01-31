@@ -13,6 +13,13 @@ def pytest_addoption(parser):
     )
 
 
+def pytest_configure(config):
+    # register slow marker
+    config.addinivalue_line(
+        "markers", "slow: this test is kinda slow (skip with -m 'not slow')"
+    )
+
+
 @pytest.fixture(scope="session")
 def dsn(request):
     """Return the dsn used to connect to the `--test-dsn` database."""
