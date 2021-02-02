@@ -4,7 +4,11 @@ jsonb_parser -- jsonb on-disk format parser.
 
 # Copyright (C) 2021 Daniele Varrazzo
 
-import struct
+from libc.stdint cimport uint32_t
+from cpython.buffer cimport (
+    PyObject_CheckBuffer, PyObject_GetBuffer, PyBUF_SIMPLE, PyBuffer_Release
+)
+
 import codecs
 from typing import Any, Callable, cast, Dict, List, Tuple, Union
 from collections import namedtuple
@@ -29,15 +33,33 @@ def parse_jsonb(data: Buffer) -> Any:
     return v.object
 
 
-class JsonbParser:
+cdef class JsonbParser:
     """
     An object to parse a buffer containing a jsonb data.
     """
+    cdef readonly object data
+    cdef object _object
+    cdef int _parsed
 
-    def __init__(self, data: Buffer):
+    cdef int _gotbuf
+    cdef Py_buffer _buf
+
+    def __cinit__(self, data):
         self.data = data
-        self._object: Any = None
-        self._parsed = False
+
+        if PyObject_CheckBuffer(data):
+            PyObject_GetBuffer(data, &(self._buf), PyBUF_SIMPLE)
+            self._gotbuf = True
+        else:
+            raise TypeError(f"bytes or buffer expected, got {type(data)}")
+
+        self._object = None
+        self._parsed = 0
+        self._gotbuf = 0
+
+    def __dealloc__(self) -> None:
+        if self._gotbuf:
+            PyBuffer_Release(&(self._buf))
 
     def parse(self) -> None:
         """Parse the input data.
@@ -55,7 +77,7 @@ class JsonbParser:
 
         return self._object
 
-    def _parse_root(self) -> Any:
+    cdef object _parse_root(self):
         """Parse and return root element of the data.
 
         The root element is always a container. If the json is a scalar, it is
@@ -70,7 +92,7 @@ class JsonbParser:
         else:
             raise ValueError(f"bad root header: 0x{jc:08x}")
 
-    def _parse_container(self, je: int, pos: int) -> JContainer:
+    cdef object _parse_container(self, uint32_t je, Py_ssize_t pos):
         """Parse and return a container found at pos in the data.
 
         A container is composed by a 4-aligned JsonContainer header with its
@@ -95,7 +117,7 @@ class JsonbParser:
         else:
             raise ValueError(f"bad container header: 0x{jc:08x}")
 
-    def _parse_array(self, jc: int, pos: int) -> JArray:
+    cdef object _parse_array(self, uint32_t jc, Py_ssize_t pos):
         """Parse an array and return it as a Python list.
 
         An array is a container with a sequence of JEntry representing its
@@ -124,7 +146,7 @@ class JsonbParser:
 
         return res
 
-    def _parse_object(self, jc: int, pos: int) -> JObject:
+    cdef object _parse_object(self, uint32_t jc, Py_ssize_t pos):
         """Parse an object and return it as a Python dict.
 
         An object is represented as a container with 2 * size JEntries. The
@@ -155,7 +177,9 @@ class JsonbParser:
 
         return dict(zip(res[:size], res[size:]))
 
-    def _parse_entry(self, je: int, pos: int, length: int) -> Any:
+    cdef object _parse_entry(
+        self, uint32_t je, Py_ssize_t pos, Py_ssize_t length
+    ):
         """Parse a JsonEntry into a Python value."""
         typ = jbe_type(je)
         if typ == JENTRY_ISSTRING:
@@ -173,7 +197,7 @@ class JsonbParser:
         else:
             raise ValueError(f"bad entry header: 0x{je:08x}")
 
-    def _parse_string(self, pos: int, length: int) -> JString:
+    cdef object _parse_string(self, uint32_t pos, Py_ssize_t length):
         """Parse a chunk of data into a Python string.
 
         JSON strings are utf-8. Note that we don't use the method `.decode()`
@@ -182,7 +206,7 @@ class JsonbParser:
         """
         return _decode_utf8(self.data[pos : pos + length])[0]
 
-    def _parse_numeric(self, pos: int, length: int) -> JNumeric:
+    cdef object _parse_numeric(self, uint32_t pos, Py_ssize_t length):
         """Parse a chunk of data into a Python numeric value.
 
         Note: this is a parser for the on-disk format, not the send/recv
@@ -195,15 +219,18 @@ class JsonbParser:
             off += 4 - wpad
         return parse_numeric(self.data[pos + off : pos + length])
 
-    def _get32(self, pos: int) -> int:
-        """Parse an uint32 from a position in the buffer.
+    cdef uint32_t _get32(self, Py_ssize_t pos):
+        """Parse an uint32 from a position in the data buffer.
 
         Note: parsing little endian here. I assume the bytes order depends on
         the server machine architecture.
 
         TODO: Sniff it from the root container.
         """
-        return _unpack_uint4(self.data, pos)[0]
+        if 0 <= pos <= self._buf.len - 4:
+            return (<uint32_t *>(self._buf.buf + pos))[0]
+
+        raise IndexError(f"can't access {pos}: buffer size is {self._buf.len}")
 
 
 # The following definitions are converted from Postgres source, and allow
@@ -324,8 +351,5 @@ def dis_jc(jc: int) -> JCDetails:
 
 
 _UnpackInt = Callable[[Buffer, int], Tuple[int]]
-
-# TODO: the server might be big-endian. Detect from first bytes?
-_unpack_uint4 = cast(_UnpackInt, struct.Struct("<I").unpack_from)
 
 _decode_utf8 = codecs.lookup("utf8").decode
