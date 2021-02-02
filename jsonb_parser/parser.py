@@ -9,7 +9,10 @@ import codecs
 from typing import Any, Callable, cast, Dict, List, Tuple, Union
 from collections import namedtuple
 
+from .numeric import parse_numeric
+
 Buffer = Union[bytes, bytearray, memoryview]
+
 JArray = List[Any]
 JObject = Dict[str, Any]
 JString = str
@@ -180,8 +183,17 @@ class JsonbParser:
         return _decode_utf8(self.data[pos : pos + length])[0]
 
     def _parse_numeric(self, pos: int, length: int) -> JNumeric:
-        """Parse a chunk of data into a Python numeric value."""
-        raise NotImplementedError("numeric parsing")
+        """Parse a chunk of data into a Python numeric value.
+
+        Note: this is a parser for the on-disk format, not the send/recv
+        format. As such it is machine-dependent and probably incomplete.
+        """
+        # the format includes the varlena header and alignment padding
+        off = 4
+        wpad = pos % 4
+        if wpad:
+            off += 4 - wpad
+        return parse_numeric(self.data[pos + off : pos + length])
 
     def _get32(self, pos: int) -> int:
         """Parse an uint32 from a position in the buffer.
@@ -257,7 +269,7 @@ def jbe_type(je: int) -> int:
 JEDetails = namedtuple("JEDetails", "type offlen hasoff")
 
 
-def parse_je(je: int) -> JEDetails:
+def dis_je(je: int) -> JEDetails:
     """Debug helper to check what's in a JsonEntry."""
     typ = {
         JENTRY_ISSTRING: "str",
@@ -300,12 +312,14 @@ def jc_is_array(val: int) -> bool:
 JCDetails = namedtuple("JCDetails", "type size scal")
 
 
-def parse_jc(jc: int) -> JCDetails:
+def dis_jc(jc: int) -> JCDetails:
     """Debug helper to check what's in a JsonContainer."""
     if jc_is_array(jc):
         typ = "array"
     if jc_is_object(jc):
         typ = "object"
+    else:
+        raise ValueError(f"not a container: 0x{jc:08x}")
     return JCDetails(typ, jc_size(jc), jc_is_scalar(jc))
 
 

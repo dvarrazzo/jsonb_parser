@@ -29,7 +29,7 @@ def dsn(request):
     return dsn
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def conn(dsn):
     """Return a `Connection` connected to the ``--test-dsn`` database.
 
