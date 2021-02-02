@@ -1,5 +1,5 @@
 """
-jsonb_parser -- parser entry point.
+jsonb_parser -- jsonb on-disk format parser.
 """
 
 # Copyright (C) 2021 Daniele Varrazzo
