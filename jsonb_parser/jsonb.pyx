@@ -8,12 +8,9 @@ from libc.stdint cimport uint32_t
 from cpython.buffer cimport (
     PyObject_CheckBuffer, PyObject_GetBuffer, PyBUF_SIMPLE, PyBuffer_Release
 )
+from cpython.unicode cimport PyUnicode_DecodeUTF8
 
-import codecs
 from typing import Any, Callable, cast, Dict, List, Tuple, Union
-from collections import namedtuple
-
-from .numeric import parse_numeric
 
 Buffer = Union[bytes, bytearray, memoryview]
 
@@ -26,6 +23,8 @@ JNull = type(None)
 JContainer = Union[JArray, JObject]
 JScalar = Union[JNull, JBool, JNumeric, JString]
 
+ctypedef uint32_t JEntry
+ctypedef uint32_t JCont
 
 def parse_jsonb(data: Buffer) -> Any:
     v = JsonbParser(data)
@@ -92,7 +91,7 @@ cdef class JsonbParser:
         else:
             raise ValueError(f"bad root header: 0x{jc:08x}")
 
-    cdef object _parse_container(self, uint32_t je, Py_ssize_t pos):
+    cdef object _parse_container(self, JEntry je, Py_ssize_t pos):
         """Parse and return a container found at pos in the data.
 
         A container is composed by a 4-aligned JsonContainer header with its
@@ -106,10 +105,8 @@ cdef class JsonbParser:
         compress). Currently the server stores one offset each stride of 32
         items, but the client doesn't make any assumption about it.
         """
-        wpad = pos % 4  # would you like some padding?
-        if wpad:
-            pos += 4 - wpad
-        jc = self._get32(pos)
+        pos += int32_pad[pos % sizeof(uint32_t)]  # would you like some padding?
+        cdef JCont jc = self._get32(pos)
         if jc_is_array(jc):
             return self._parse_array(jc, pos)
         elif jc_is_object(jc):
@@ -117,22 +114,27 @@ cdef class JsonbParser:
         else:
             raise ValueError(f"bad container header: 0x{jc:08x}")
 
-    cdef object _parse_array(self, uint32_t jc, Py_ssize_t pos):
+    cdef object _parse_array(self, JCont jc, Py_ssize_t pos):
         """Parse an array and return it as a Python list.
 
         An array is a container with a sequence of JEntry representing its
         elements in the order they appear.
         """
-        size = jc_size(jc)
+        cdef Py_ssize_t size = jc_size(jc)
         if not size:
             return []
 
-        res = []
-        pos += 4  # past the container head
-        vstart = pos + 4 * size  # where are the values, past the jentries
-        voff = 0
+        cdef list res = []
+        pos += sizeof(jc)  # past the container head
+        # where are the values, past the jentries
+        cdef Py_ssize_t vstart = pos + sizeof(JEntry) * size
+        cdef Py_ssize_t voff = 0
+
+        cdef JEntry je
+        cdef Py_ssize_t flen
+        cdef object obj
         for i in range(size):
-            je = self._get32(pos + 4 * i)
+            je = self._get32(pos + sizeof(JEntry) * i)
 
             # calculate the value length
             # if has_off, flen is the offset from vstart, not the length
@@ -146,7 +148,7 @@ cdef class JsonbParser:
 
         return res
 
-    cdef object _parse_object(self, uint32_t jc, Py_ssize_t pos):
+    cdef object _parse_object(self, JCont jc, Py_ssize_t pos):
         """Parse an object and return it as a Python dict.
 
         An object is represented as a container with 2 * size JEntries. The
@@ -154,16 +156,21 @@ cdef class JsonbParser:
         by length, then by content), the second half are the values, in the
         same order of the keys.
         """
-        size = jc_size(jc)
+        cdef Py_ssize_t size = jc_size(jc)
         if not size:
             return {}
 
-        res = []
+        cdef list res = []
         pos += 4  # past the container head
-        vstart = pos + 4 * size * 2  # where are the values, past the jentries
-        voff = 0
+        # where are the values, past the jentries
+        cdef Py_ssize_t vstart = pos + sizeof(JEntry) * size * 2
+        cdef Py_ssize_t voff = 0
+
+        cdef JEntry je
+        cdef Py_ssize_t flen
+        cdef object obj
         for i in range(size * 2):
-            je = self._get32(pos + 4 * i)
+            je = self._get32(pos + sizeof(JEntry) * i)
 
             # calculate the value length
             # if has_off, flen is the offset from vstart, not the length
@@ -178,48 +185,55 @@ cdef class JsonbParser:
         return dict(zip(res[:size], res[size:]))
 
     cdef object _parse_entry(
-        self, uint32_t je, Py_ssize_t pos, Py_ssize_t length
+        self, JEntry je, Py_ssize_t pos, Py_ssize_t length
     ):
         """Parse a JsonEntry into a Python value."""
-        typ = jbe_type(je)
-        if typ == JENTRY_ISSTRING:
+        if jbe_isstring(je):
             return self._parse_string(pos, length)
-        elif typ == JENTRY_ISNUMERIC:
+        elif jbe_isnumeric(je):
             return self._parse_numeric(pos, length)
-        elif typ == JENTRY_ISCONTAINER:
+        elif jbe_iscontainer(je):
             return self._parse_container(je, pos)
-        elif typ == JENTRY_ISNULL:
+        elif jbe_isnull(je):
             return None
-        elif typ == JENTRY_ISBOOL_TRUE:
+        elif jbe_isbool_true(je):
             return True
-        elif typ == JENTRY_ISBOOL_FALSE:
+        elif jbe_isbool_false(je):
             return False
         else:
             raise ValueError(f"bad entry header: 0x{je:08x}")
 
-    cdef object _parse_string(self, uint32_t pos, Py_ssize_t length):
+    cdef object _parse_string(self, Py_ssize_t pos, Py_ssize_t length):
         """Parse a chunk of data into a Python string.
 
         JSON strings are utf-8. Note that we don't use the method `.decode()`
         here in order to support the memoryview object, which is more efficient
         than bytes/bytearray as it doesn't require a copy to be sliced.
         """
-        return _decode_utf8(self.data[pos : pos + length])[0]
+        if 0 <= pos <= self._buf.len - length:
+            return PyUnicode_DecodeUTF8(
+                <char *>(self._buf.buf + pos), length, NULL)
 
-    cdef object _parse_numeric(self, uint32_t pos, Py_ssize_t length):
+        raise IndexError(
+            f"can't get {length} bytes from {pos}: buffer size is {self._buf.len}")
+
+    cdef object _parse_numeric(self, Py_ssize_t pos, Py_ssize_t length):
         """Parse a chunk of data into a Python numeric value.
 
         Note: this is a parser for the on-disk format, not the send/recv
         format. As such it is machine-dependent and probably incomplete.
         """
-        # the format includes the varlena header and alignment padding
-        off = 4
-        wpad = pos % 4
-        if wpad:
-            off += 4 - wpad
-        return parse_numeric(self.data[pos + off : pos + length])
+        cdef Py_ssize_t wpad
+        if 0 <= pos <= self._buf.len - length:
+            # the format includes the varlena header and alignment padding
+            wpad = sizeof(uint32_t) + int32_pad[pos % sizeof(uint32_t)]
+            return parse_numeric(
+                <unsigned char *>(self._buf.buf + pos + wpad), length - wpad)
 
-    cdef uint32_t _get32(self, Py_ssize_t pos):
+        raise IndexError(
+            f"can't get {length} bytes from {pos}: buffer size is {self._buf.len}")
+
+    cdef uint32_t _get32(self, Py_ssize_t pos) except? 0xFFFFFFFF:
         """Parse an uint32 from a position in the data buffer.
 
         Note: parsing little endian here. I assume the bytes order depends on
@@ -227,7 +241,7 @@ cdef class JsonbParser:
 
         TODO: Sniff it from the root container.
         """
-        if 0 <= pos <= self._buf.len - 4:
+        if 0 <= pos <= self._buf.len - <Py_ssize_t>sizeof(uint32_t):
             return (<uint32_t *>(self._buf.buf + pos))[0]
 
         raise IndexError(f"can't access {pos}: buffer size is {self._buf.len}")
@@ -238,118 +252,59 @@ cdef class JsonbParser:
 # https://github.com/postgres/postgres/blob/master/src/include/utils/jsonb.h
 # for all the details.
 
+cdef extern from *:
+    """
+#define JENTRY_OFFLENMASK       0x0FFFFFFF
+#define JENTRY_TYPEMASK         0x70000000
+#define JENTRY_HAS_OFF          0x80000000
 
-# JsonEntry parsing
-JENTRY_OFFLENMASK = 0x0FFFFFFF
-JENTRY_TYPEMASK = 0x70000000
-JENTRY_HAS_OFF = 0x80000000
+/* values stored in the type bits */
+#define JENTRY_ISSTRING         0x00000000
+#define JENTRY_ISNUMERIC        0x10000000
+#define JENTRY_ISBOOL_FALSE     0x20000000
+#define JENTRY_ISBOOL_TRUE      0x30000000
+#define JENTRY_ISNULL           0x40000000
+#define JENTRY_ISCONTAINER      0x50000000      /* array or object */
 
-# values stored in the type bits
-JENTRY_ISSTRING = 0x00000000
-JENTRY_ISNUMERIC = 0x10000000
-JENTRY_ISBOOL_FALSE = 0x20000000
-JENTRY_ISBOOL_TRUE = 0x30000000
-JENTRY_ISNULL = 0x40000000
-JENTRY_ISCONTAINER = 0x50000000  # array or object
+/* Access macros.  Note possible multiple evaluations */
+#define jbe_offlenfld(je)      ((je) & JENTRY_OFFLENMASK)
+#define jbe_has_off(je)        (((je) & JENTRY_HAS_OFF) != 0)
+#define jbe_isstring(je)       (((je) & JENTRY_TYPEMASK) == JENTRY_ISSTRING)
+#define jbe_isnumeric(je)      (((je) & JENTRY_TYPEMASK) == JENTRY_ISNUMERIC)
+#define jbe_iscontainer(je)    (((je) & JENTRY_TYPEMASK) == JENTRY_ISCONTAINER)
+#define jbe_isnull(je)         (((je) & JENTRY_TYPEMASK) == JENTRY_ISNULL)
+#define jbe_isbool_true(je)    (((je) & JENTRY_TYPEMASK) == JENTRY_ISBOOL_TRUE)
+#define jbe_isbool_false(je)   (((je) & JENTRY_TYPEMASK) == JENTRY_ISBOOL_FALSE)
+#define jbe_isbool(je)         (JBE_ISBOOL_TRUE(je) || JBE_ISBOOL_FALSE(je))
 
+/* flags for the header-field in JsonbContainer */
+#define JB_CMASK        0x0FFFFFFF      /* mask for count field */
+#define JB_FSCALAR      0x10000000      /* flag bits */
+#define JB_FOBJECT      0x20000000
+#define JB_FARRAY       0x40000000
 
-def jbe_offlenfld(je: int) -> int:
-    return je & JENTRY_OFFLENMASK
+/* convenience macros for accessing a JsonbContainer struct */
+#define jc_size(jc)         ((jc) & JB_CMASK)
+#define jc_is_scalar(jc)    (((jc) & JB_FSCALAR) != 0)
+#define jc_is_object(jc)    (((jc) & JB_FOBJECT) != 0)
+#define jc_is_array(jc)     (((jc) & JB_FARRAY) != 0)
 
+/* padding to align pointers to 4-bounds */
+static const int int32_pad[] = {0, 3, 2, 1};
+    """
+    int jbe_offlenfld(JEntry je)
+    int jbe_has_off(JEntry je)
+    int jbe_isstring(JEntry je)
+    int jbe_isnumeric(JEntry je)
+    int jbe_iscontainer(JEntry je)
+    int jbe_isnull(JEntry je)
+    int jbe_isbool_true(JEntry je)
+    int jbe_isbool_false(JEntry je)
+    int jbe_isbool(JEntry je)
 
-def jbe_has_off(je: int) -> bool:
-    return (je & JENTRY_HAS_OFF) != 0
+    int jc_size(JCont jc)
+    int jc_is_scalar(JCont jc)
+    int jc_is_array(JCont jc)
+    int jc_is_object(JCont jc)
 
-
-def jbe_isstring(je: int) -> bool:
-    return (je & JENTRY_TYPEMASK) == JENTRY_ISSTRING
-
-
-def jbe_isnumeric(je: int) -> bool:
-    return (je & JENTRY_TYPEMASK) == JENTRY_ISNUMERIC
-
-
-def jbe_iscontainer(je: int) -> bool:
-    return (je & JENTRY_TYPEMASK) == JENTRY_ISCONTAINER
-
-
-def jbe_isnull(je: int) -> bool:
-    return je & JENTRY_TYPEMASK == JENTRY_ISNULL
-
-
-def jbe_isbool_true(je: int) -> bool:
-    return (je & JENTRY_TYPEMASK) == JENTRY_ISBOOL_TRUE
-
-
-def jbe_isbool_false(je: int) -> bool:
-    return (je & JENTRY_TYPEMASK) == JENTRY_ISBOOL_FALSE
-
-
-def jbe_isbool(je: int) -> bool:
-    return jbe_isbool_true(je) or jbe_isbool_false(je)
-
-
-def jbe_type(je: int) -> int:
-    return je & JENTRY_TYPEMASK
-
-
-JEDetails = namedtuple("JEDetails", "type offlen hasoff")
-
-
-def dis_je(je: int) -> JEDetails:
-    """Debug helper to check what's in a JsonEntry."""
-    typ = {
-        JENTRY_ISSTRING: "str",
-        JENTRY_ISNUMERIC: "num",
-        JENTRY_ISCONTAINER: "cont",
-        JENTRY_ISNULL: "null",
-        JENTRY_ISBOOL_TRUE: "true",
-        JENTRY_ISBOOL_FALSE: "false",
-    }[jbe_type(je)]
-    return JEDetails(typ, jbe_offlenfld(je), jbe_has_off(je))
-
-
-# flags for the header-field in JsonbContainer
-JB_CMASK = 0x0FFFFFFF  # mask for count field
-JB_FSCALAR = 0x10000000  # flag bits
-JB_FOBJECT = 0x20000000
-JB_FARRAY = 0x40000000
-
-
-def jc_size(val: int) -> int:
-    """Return the size a JsonContainer."""
-    return val & JB_CMASK
-
-
-def jc_is_scalar(val: int) -> bool:
-    """Return True if a JsonContainer header represents a scalar."""
-    return val & JB_FSCALAR != 0
-
-
-def jc_is_object(val: int) -> bool:
-    """Return True if a JsonContainer header represents an object."""
-    return val & JB_FOBJECT != 0
-
-
-def jc_is_array(val: int) -> bool:
-    """Return True if a JsonContainer header represents an array."""
-    return val & JB_FARRAY != 0
-
-
-JCDetails = namedtuple("JCDetails", "type size scal")
-
-
-def dis_jc(jc: int) -> JCDetails:
-    """Debug helper to check what's in a JsonContainer."""
-    if jc_is_array(jc):
-        typ = "array"
-    if jc_is_object(jc):
-        typ = "object"
-    else:
-        raise ValueError(f"not a container: 0x{jc:08x}")
-    return JCDetails(typ, jc_size(jc), jc_is_scalar(jc))
-
-
-_UnpackInt = Callable[[Buffer, int], Tuple[int]]
-
-_decode_utf8 = codecs.lookup("utf8").decode
+    const int[4] int32_pad

@@ -4,9 +4,9 @@ jsonb_parser -- parser for numeric values.
 
 # Copyright (C) 2021 Daniele Varrazzo
 
-import struct
+from libc.stdint cimport uint16_t
+
 from typing import cast, Callable, Dict, Tuple, Union
-from collections import namedtuple
 
 Buffer = Union[bytes, bytearray, memoryview]
 
@@ -49,20 +49,20 @@ NUMERIC_SHORT = 0x8000
 NUMERIC_SPECIAL = 0xC000
 
 
-def parse_numeric(data: Buffer) -> Union[float, int]:
+cdef object parse_numeric(unsigned char *data, Py_ssize_t length):
     """Parse a chunk of data into a Python numeric value.
 
     Note: this is a parser for the on-disk format, not the send/recv
     format. As such it is machine-dependent and probably incomplete.
     """
-    head = _get16(data, 0)
+    head = _get16(data, length, 0)
     hmsb = head & NUMERIC_SIGN_MASK  # head most significant bits
     if hmsb == NUMERIC_SHORT:
-        return _parse_short(data)
+        return _parse_short(data, length)
     elif hmsb == NUMERIC_SPECIAL:
         return _parse_special(head)
     else:
-        return _parse_long(data)
+        return _parse_long(data, length)
 
 
 # Definitions for special values (NaN, positive infinity, negative infinity).
@@ -108,8 +108,8 @@ NUMERIC_SHORT_WEIGHT_MAX = NUMERIC_SHORT_WEIGHT_MASK
 NUMERIC_SHORT_WEIGHT_MIN = -(NUMERIC_SHORT_WEIGHT_MASK + 1)
 
 
-def _parse_short(data: Buffer) -> Union[int, float]:
-    head = _get16(data, 0)
+cdef object _parse_short(unsigned char *data, Py_ssize_t length):
+    head = _get16(data, length, 0)
 
     # assemble the integer mantissa
     num: Union[int, float] = 0
@@ -118,11 +118,10 @@ def _parse_short(data: Buffer) -> Union[int, float]:
     weight = head & NUMERIC_SHORT_WEIGHT_MASK
     if head & NUMERIC_SHORT_WEIGHT_SIGN_MASK:
         weight |= ~NUMERIC_SHORT_WEIGHT_MASK
+    for p in range(2, length, 2):
+        num = num * 10_000 + _get16(data, length, p)
 
-    for p in range(2, len(data), 2):
-        num = num * 10_000 + _get16(data, p)
-
-    ndigits = len(data) // 2 - 1
+    ndigits = length // 2 - 1
     shift = ndigits - weight - 1
     if shift > 0:
         for _ in range(shift):
@@ -136,44 +135,24 @@ def _parse_short(data: Buffer) -> Union[int, float]:
     return num
 
 
-ShortDetails = namedtuple("ShortDetails", "dscale weight sign digits")
-
-
-def dis_short(data: bytes) -> ShortDetails:
-    """Debug helper to see what's in a short numeric"""
-    head = _get16(data, 0)
-    assert (head & NUMERIC_SIGN_MASK) == NUMERIC_SHORT, "not a short"
-
-    dscale = (head & NUMERIC_SHORT_DSCALE_MASK) >> NUMERIC_SHORT_DSCALE_SHIFT
-    weight = head & NUMERIC_SHORT_WEIGHT_MASK
-    if head & NUMERIC_SHORT_WEIGHT_SIGN_MASK:
-        weight |= ~NUMERIC_SHORT_WEIGHT_MASK
-
-    digits = tuple(_get16(data, i) for i in range(2, len(data), 2))
-    sign = "-" if head & NUMERIC_SHORT_SIGN_MASK else "+"
-
-    return ShortDetails(dscale=dscale, weight=weight, sign=sign, digits=digits)
-
-
 # In the NumericLong format, the remaining 14 bits of the header word
 # (n_long.n_sign_dscale) represent the display scale; and the weight is
 # stored separately in n_weight.
 
 
-def _parse_long(data: Buffer) -> Union[float, int]:
+cdef object _parse_long(unsigned char *data, Py_ssize_t length):
     raise NotImplementedError("long numeric not implemented yet")
 
 
-def _get16(data: Buffer, pos: int) -> int:
+cdef uint16_t _get16(
+    unsigned char *data, Py_ssize_t length, Py_ssize_t pos
+) except? 0xFFFF:
     """Parse an uint16 from a position in the data buffer.
 
     Note: parsing little endian here. I assume the bytes order depends on
     the server machine architecture.
     """
-    return _unpack_uint2(data, pos)[0]
+    if 0 <= pos <= length - <Py_ssize_t>sizeof(uint16_t):
+        return (<uint16_t *>(data + pos))[0]
 
-
-_UnpackInt = Callable[[Buffer, int], Tuple[int]]
-
-# TODO: the server might be big-endian. Detect from first bytes?
-_unpack_uint2 = cast(_UnpackInt, struct.Struct("<H").unpack_from)
+    raise IndexError(f"can't access {pos}: buffer size is {length}")
