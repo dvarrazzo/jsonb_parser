@@ -82,7 +82,7 @@ cdef class JsonbParser:
         The root element is always a container. If the json is a scalar, it is
         represented as a 1-elem array, with the "scalar" bit set.
         """
-        jc = self._get32(0)
+        cdef JCont jc = self._get32(0)
         if jc_is_array(jc):
             rv = self._parse_array(jc, 0)
             return rv[0] if jc_is_scalar(jc) else rv
@@ -105,7 +105,7 @@ cdef class JsonbParser:
         compress). Currently the server stores one offset each stride of 32
         items, but the client doesn't make any assumption about it.
         """
-        pos += int32_pad[pos % sizeof(uint32_t)]  # would you like some padding?
+        pos += int32_pad[pos & 3]  # would you like some padding?
         cdef JCont jc = self._get32(pos)
         if jc_is_array(jc):
             return self._parse_array(jc, pos)
@@ -133,6 +133,7 @@ cdef class JsonbParser:
         cdef JEntry je
         cdef Py_ssize_t flen
         cdef object obj
+        cdef int i
         for i in range(size):
             je = self._get32(pos + sizeof(JEntry) * i)
 
@@ -169,6 +170,7 @@ cdef class JsonbParser:
         cdef JEntry je
         cdef Py_ssize_t flen
         cdef object obj
+        cdef int i
         for i in range(size * 2):
             je = self._get32(pos + sizeof(JEntry) * i)
 
@@ -226,7 +228,7 @@ cdef class JsonbParser:
         cdef Py_ssize_t wpad
         if 0 <= pos <= self._buf.len - length:
             # the format includes the varlena header and alignment padding
-            wpad = sizeof(uint32_t) + int32_pad[pos % sizeof(uint32_t)]
+            wpad = sizeof(uint32_t) + int32_pad[pos & 3]
             return parse_numeric(
                 <unsigned char *>(self._buf.buf + pos + wpad), length - wpad)
 
