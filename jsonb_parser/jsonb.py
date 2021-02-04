@@ -84,9 +84,7 @@ class JsonbParser:
         compress). Currently the server stores one offset each stride of 32
         items, but the client doesn't make any assumption about it.
         """
-        wpad = pos % 4  # would you like some padding?
-        if wpad:
-            pos += 4 - wpad
+        pos += int32_pad[pos & 3]  # would you like some padding?
         jc = self._get32(pos)
         if jc_is_array(jc):
             return self._parse_array(jc, pos)
@@ -189,10 +187,7 @@ class JsonbParser:
         format. As such it is machine-dependent and probably incomplete.
         """
         # the format includes the varlena header and alignment padding
-        off = 4
-        wpad = pos % 4
-        if wpad:
-            off += 4 - wpad
+        off = 4 + int32_pad[pos & 3]
         return parse_numeric(self.data[pos + off : pos + length])
 
     def _get32(self, pos: int) -> int:
@@ -329,3 +324,5 @@ _UnpackInt = Callable[[Buffer, int], Tuple[int]]
 _unpack_uint4 = cast(_UnpackInt, struct.Struct("<I").unpack_from)
 
 _decode_utf8 = codecs.lookup("utf8").decode
+
+int32_pad = [0, 3, 2, 1]

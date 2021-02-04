@@ -10,23 +10,11 @@ from cpython.buffer cimport (
 )
 from cpython.unicode cimport PyUnicode_DecodeUTF8
 
-from typing import Any, Callable, cast, Dict, List, Tuple, Union
-
-Buffer = Union[bytes, bytearray, memoryview]
-
-JArray = List[Any]
-JObject = Dict[str, Any]
-JString = str
-JNumeric = Union[int, float]  # TODO decimal too?
-JBool = bool
-JNull = type(None)
-JContainer = Union[JArray, JObject]
-JScalar = Union[JNull, JBool, JNumeric, JString]
 
 ctypedef uint32_t JEntry
 ctypedef uint32_t JCont
 
-def parse_jsonb(data: Buffer) -> Any:
+def parse_jsonb(data) -> Any:
     v = JsonbParser(data)
     v.parse()
     return v.object
