@@ -149,30 +149,50 @@ cdef class JsonbParser:
         if not size:
             return {}
 
-        cdef list res = []
-        pos += 4  # past the container head
-        # where are the values, past the jentries
-        cdef Py_ssize_t vstart = pos + sizeof(JEntry) * size * 2
-        cdef Py_ssize_t voff = 0
-
-        cdef JEntry je
-        cdef Py_ssize_t flen
-        cdef object obj
         cdef int i
-        for i in range(size * 2):
-            je = self._get32(pos + sizeof(JEntry) * i)
+        cdef JEntry je
+        pos += sizeof(jc)  # past the container head
 
-            # calculate the value length
-            # if has_off, flen is the offset from vstart, not the length
+        # Make sure we have all the jentries we need
+        self.ensure_size(pos, 2 * size * sizeof(JEntry))
+
+        # where are the keys bodies: past the jentries
+        cdef Py_ssize_t vstart = pos + 2 * size * sizeof(JEntry)
+        cdef Py_ssize_t koff = 0
+
+        # Accumulate lengths from the last to the first key, until offset found
+        cdef Py_ssize_t voff = 0
+        for i in range(size - 1, -1, -1):
+            je = (<JEntry *>(self._buf.buf + pos))[i]
+            voff += jbe_offlenfld(je)
+            if jbe_has_off(je):
+                break
+
+        cdef Py_ssize_t flen
+        cdef object key
+        cdef object value
+        cdef dict res = {}
+        for i in range(size):
+            # Key entry
+            je = (<JEntry *>(self._buf.buf + pos))[i]
+            flen = jbe_offlenfld(je)
+            if jbe_has_off(je):
+                flen -= koff
+
+            key = self._parse_entry(je, vstart + koff, flen)
+            koff += flen
+
+            # Value entry
+            je = (<JEntry *>(self._buf.buf + pos))[size + i]
             flen = jbe_offlenfld(je)
             if jbe_has_off(je):
                 flen -= voff
 
-            obj = self._parse_entry(je, vstart + voff, flen)
-            res.append(obj)
+            value = self._parse_entry(je, vstart + voff, flen)
+            res[key] = value
             voff += flen
 
-        return dict(zip(res[:size], res[size:]))
+        return res
 
     cdef object _parse_entry(
         self, JEntry je, Py_ssize_t pos, Py_ssize_t length
@@ -235,6 +255,22 @@ cdef class JsonbParser:
             return (<uint32_t *>(self._buf.buf + pos))[0]
 
         raise IndexError(f"can't access {pos}: buffer size is {self._buf.len}")
+
+    cdef object ensure_size(self, Py_ssize_t pos, Py_ssize_t length):
+        """
+        Raise an exception if there aren't at least length bytes from pos available
+        """
+        if pos + length > self._buf.len:
+            raise IndexError(f"no {length} available from {pos} in the buffer")
+
+
+cdef extern from *:
+    """
+    #define get32_unsafe(buf, pos) (*(int32_t*)(buf + pos))
+    """
+    # You should use it only after ensure_size()
+    cdef JEntry jentry_unsafe(unsigned char *buf, Py_ssize_t pos)
+
 
 
 # The following definitions are converted from Postgres source, and allow
