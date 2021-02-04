@@ -6,7 +6,9 @@ import time
 import logging
 from typing import Any
 from argparse import ArgumentParser, Namespace
+from collections import defaultdict
 
+import orjson
 import psycopg3
 from psycopg3.pq import Format
 from psycopg3.types.json import Json
@@ -68,10 +70,28 @@ def main() -> None:
     make_random_table(opt)
 
     with psycopg3.connect(opt.dsn, autocommit=True) as conn:
-        with conn.cursor() as cur:
 
-            # Return binary data from the postgres
-            cur.format = Format.BINARY
+        queries = {
+            "jsonb": "select data from test_jsonb",
+            "orjson": "select data from test_jsonb",
+            "bytea": "select data::bytea from test_jsonb",
+            "jsonb-disk": "select data::bytea from test_jsonb",
+        }
+        timings = defaultdict(list)
+
+        def test(cur: psycopg3.Cursor, title: str) -> None:
+            t0 = time.time()
+            cur.execute(queries[title])
+            t1 = time.time()
+            for row in cur:
+                pass
+            t2 = time.time()
+            logger.info(
+                f"time {title}: {t1-t0:f} xfer, {t2-t1:f} parsing, {t2-t0:f} total"
+            )
+            timings[title].append((t0, t1, t2))
+
+        with conn.cursor() as cur:
 
             logger.info("warming up")
             cur.execute(
@@ -85,41 +105,45 @@ def main() -> None:
             cur.execute("select data from test_jsonb")
             logger.info(f"number of records: {nrecs}, table size {size}")
 
-            t0 = time.time()
-            cur.execute("select data from test_jsonb")
-            t1 = time.time()
-            for row in cur:
-                pass
-            t2 = time.time()
-            logger.info(f"time text: {t1 - t0:f} xfer, {t2 - t1:f} parsing")
+            for i in range(3):
+                cur = conn.cursor()
+                test(cur, "jsonb")
 
-            t0 = time.time()
-            cur.execute("select data::bytea from test_jsonb -- bytes")
-            t1 = time.time()
-            for row in cur:
-                pass
-            t2 = time.time()
-            logger.info(f"time bytea: {t1 - t0:f} xfer, {t2 - t1:f} parsing")
+                cur = conn.cursor()
+                ORJsonLoader.register("jsonb", cur)
+                test(cur, "orjson")
 
-            # Register the adapter to parse jsonb from disk format
-            JsonLoader.register("bytea", cur)
+                cur = conn.cursor(binary=True)
+                test(cur, "bytea")
 
-            t0 = time.time()
-            cur.execute("select data::bytea from test_jsonb -- jsonb")
-            t1 = time.time()
-            for row in cur:
-                pass
-            t2 = time.time()
-            logger.info(
-                f"time disk jsonb: {t1 - t0:f} xfer, {t2 - t1:f} parsing"
-            )
+                cur = conn.cursor(binary=True)
+                JsonbByteaLoader.register("bytea", cur)
+                test(cur, "jsonb-disk")
+
+    bests = sorted(
+        (min(t2 - t0 for t0, _, t2 in timings[title]), title)
+        for title in queries
+    )
+    for t, title in bests:
+        logger.info(f"best for {title}: {t:f} sec")
 
 
-class JsonLoader(Loader):
+class JsonbByteaLoader(Loader):
     format = Format.BINARY
 
     def load(self, data: bytes) -> Any:
         return parse_jsonb(data)
+
+
+class ORJsonLoader(Loader):
+
+    format = Format.TEXT
+
+    def load(self, data: bytes) -> Any:
+        # memoryview not supported
+        if isinstance(data, memoryview):
+            data = bytes(data)
+        return orjson.loads(data)
 
 
 def parse_cmdline() -> Namespace:
