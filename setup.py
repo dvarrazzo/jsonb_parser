@@ -46,15 +46,21 @@ class custom_build_ext(build_ext):
 
 
 bext = Extension(
-    "jsonb_parser._parser",
-    [
-        "jsonb_parser/_parser.c",
-    ],
-    include_dirs=[],
+    "jsonb_parser._parser", ["jsonb_parser/_parser.c"], include_dirs=[]
 )
 
 setup(
     version=VERSION,
     ext_modules=[bext],
     cmdclass={"build_ext": custom_build_ext},
+    install_requires=[
+        (
+            "psycopg3 @ git+https://github.com/psycopg/psycopg3.git@68547b8"
+            "#subdirectory=psycopg3"
+        ),
+        (
+            "psycopg3-c @ git+https://github.com/psycopg/psycopg3.git@68547b8"
+            "#subdirectory=psycopg3_c"
+        ),
+    ],
 )

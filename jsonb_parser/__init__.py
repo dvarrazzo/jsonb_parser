@@ -10,7 +10,6 @@ import logging
 from .jsonb import parse_jsonb
 
 logger = logging.getLogger(__name__)
-logging.basicConfig()
 
 # Try to import the optimised extension
 try:
@@ -19,3 +18,5 @@ except ImportError:
     logger.warning("c extension not available")
 else:
     parse_jsonb = _parser.parse_jsonb  # noqa[F811]
+
+__all__ = ["parse_jsonb"]

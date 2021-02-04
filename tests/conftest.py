@@ -1,6 +1,7 @@
 import os
 
 import pytest
+import psycopg3
 
 
 def pytest_addoption(parser):
@@ -36,9 +37,7 @@ def conn(dsn):
     The connection is autocommit and the database will contain a jsonb to bytea
     cast that can be used in the tests.
     """
-    import psycopg2
-
-    conn = psycopg2.connect(dsn)
+    conn = psycopg3.connect(dsn)
     conn.autocommit = True
     ensure_jsonb_bytea_cast(conn)
     yield conn
