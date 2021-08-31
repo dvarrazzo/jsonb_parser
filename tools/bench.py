@@ -9,10 +9,10 @@ from argparse import ArgumentParser, Namespace
 from collections import defaultdict
 
 import orjson
-import psycopg3
-from psycopg3.pq import Format
-from psycopg3.types.json import Json
-from psycopg3.adapt import Loader
+import psycopg
+from psycopg.pq import Format
+from psycopg.types.json import Json
+from psycopg.adapt import Loader
 
 from jsonb_parser import parse_jsonb
 from jsonb_parser.faker import JsonFaker
@@ -24,7 +24,7 @@ logging.basicConfig(
 
 
 def make_random_table(opt: Namespace) -> None:
-    with psycopg3.connect(opt.dsn, autocommit=True) as conn:
+    with psycopg.connect(opt.dsn, autocommit=True) as conn:
         with conn.cursor() as cur:
             logger.info("creating jsonb table if necessary")
             cur.execute(
@@ -35,7 +35,7 @@ def make_random_table(opt: Namespace) -> None:
                 """
             )
             cur.execute("select count(*) from test_jsonb")
-            nrecs = cur.fetchone()[0]  # type: ignore[index]
+            nrecs = cur.fetchone()[0]  # type: ignore
 
             if opt.make_random is not None:
                 if nrecs < opt.make_random:
@@ -69,7 +69,7 @@ def main() -> None:
     opt = parse_cmdline()
     make_random_table(opt)
 
-    with psycopg3.connect(opt.dsn, autocommit=True) as conn:
+    with psycopg.connect(opt.dsn, autocommit=True) as conn:
 
         queries = {
             "jsonb": "select data from test_jsonb",
@@ -79,7 +79,7 @@ def main() -> None:
         }
         timings = defaultdict(list)
 
-        def test(cur: psycopg3.Cursor, title: str) -> None:
+        def test(cur: psycopg.Cursor[Any], title: str) -> None:
             t0 = time.time()
             cur.execute(queries[title])
             t1 = time.time()
@@ -110,14 +110,14 @@ def main() -> None:
                 test(cur, "jsonb")
 
                 cur = conn.cursor()
-                ORJsonLoader.register("jsonb", cur)
+                cur.adapters.register_loader("jsonb", ORJsonLoader)
                 test(cur, "orjson")
 
                 cur = conn.cursor(binary=True)
                 test(cur, "bytea")
 
                 cur = conn.cursor(binary=True)
-                JsonbByteaLoader.register("bytea", cur)
+                cur.adapters.register_loader("bytea", JsonbByteaLoader)
                 test(cur, "jsonb-disk")
 
     bests = sorted(
@@ -136,9 +136,6 @@ class JsonbByteaLoader(Loader):
 
 
 class ORJsonLoader(Loader):
-
-    format = Format.TEXT
-
     def load(self, data: bytes) -> Any:
         # memoryview not supported
         if isinstance(data, memoryview):
@@ -163,7 +160,7 @@ def parse_cmdline() -> Namespace:
     return opt
 
 
-def ensure_jsonb_bytea_cast(conn: psycopg3.Connection) -> None:
+def ensure_jsonb_bytea_cast(conn: psycopg.Connection[Any]) -> None:
     GET_CAST_SQL = """
         select castmethod from pg_cast
         where castsource::regtype = 'jsonb'::regtype
