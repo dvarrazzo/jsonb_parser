@@ -78,6 +78,7 @@ def main() -> None:
     with psycopg.connect(opt.dsn, autocommit=True) as conn:
 
         queries = {
+            "unparsed": "select data from test_jsonb",
             "jsonb": "select data from test_jsonb",
             "orjson": "select data from test_jsonb",
             "bytea": "select data::bytea from test_jsonb",
@@ -119,21 +120,31 @@ def main() -> None:
                 logger.warning("ubjson extension not found, not including it")
 
             for i in range(3):
+                # Jsonb sent as text, not parsed
+                cur = conn.cursor()
+                cur.adapters.register_loader("jsonb", UnparsedLoader)
+                test(cur, "unparsed")
+
+                # Jsonb sent as text, parsed with stdlib json
                 cur = conn.cursor()
                 test(cur, "jsonb")
 
+                # Jsonb sent as text, parsed with orjson parser
                 cur = conn.cursor()
                 cur.adapters.register_loader("jsonb", ORJsonLoader)
                 test(cur, "orjson")
 
+                # Jsonb sent as varlena, not parsed
                 cur = conn.cursor(binary=True)
                 test(cur, "bytea")
 
+                # Jsonb sent as varlena, parsed on the client
                 cur = conn.cursor(binary=True)
                 cur.adapters.register_loader("bytea", JsonbByteaLoader)
                 test(cur, "jsonb-disk")
 
                 if ubjson_info:
+                    # Jsonb sent as ubjson, parsed on the client
                     cur = conn.cursor(binary=True)
                     cur.adapters.register_loader("ubjson", UBJsonBinaryLoader)
                     test(cur, "ubjson")
@@ -168,6 +179,11 @@ class UBJsonBinaryLoader(Loader):
         if data[0] != 2:
             raise psycopg.DataError(f"bad ubjson version number: {data[0]}")
         return ubjson.loadb(data[1:])
+
+
+class UnparsedLoader(Loader):
+    def load(self, data: bytes) -> bytes:
+        return data
 
 
 def parse_cmdline() -> Namespace:

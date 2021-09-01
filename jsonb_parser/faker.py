@@ -33,7 +33,9 @@ class JsonFaker:
             assert False, f"unknown container type: {cont}"
 
     def random_scalar(self) -> Any:
-        typ = choice([bool, str, int, float])
+        # TODO: add numbers to ubjson
+        # typ = choice([bool, str, int, float])
+        typ = choice([bool, str])
         meth = getattr(self, f"random_{typ.__name__}")
         return meth()
 
