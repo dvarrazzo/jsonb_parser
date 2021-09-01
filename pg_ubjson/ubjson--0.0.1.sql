@@ -9,27 +9,26 @@ CREATE OR REPLACE FUNCTION ubjson_in(cstring)
  RETURNS ubjson
  LANGUAGE internal
  IMMUTABLE PARALLEL SAFE STRICT
-AS $function$jsonb_in$function$;
+AS 'jsonb_in';
 
 CREATE OR REPLACE FUNCTION ubjson_out(ubjson)
  RETURNS cstring
  LANGUAGE internal
  IMMUTABLE PARALLEL SAFE STRICT
-AS $function$jsonb_out$function$;
+AS 'jsonb_out';
 
 
--- TODO: these are the functions to replace
 CREATE OR REPLACE FUNCTION ubjson_send(ubjson)
  RETURNS bytea
- LANGUAGE internal
+ LANGUAGE C
  IMMUTABLE PARALLEL SAFE STRICT
-AS $function$jsonb_send$function$;
+AS '$libdir/ubjson';
 
 CREATE OR REPLACE FUNCTION ubjson_recv(internal)
  RETURNS ubjson
- LANGUAGE internal
+ LANGUAGE C
  IMMUTABLE PARALLEL SAFE STRICT
-AS $function$jsonb_recv$function$;
+AS '$libdir/ubjson';
 
 
 CREATE TYPE ubjson (
