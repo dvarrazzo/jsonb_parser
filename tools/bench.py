@@ -9,8 +9,10 @@ from argparse import ArgumentParser, Namespace
 from collections import defaultdict
 
 import orjson
+import ubjson  # type: ignore
 import psycopg
 from psycopg.pq import Format
+from psycopg.types import TypeInfo
 from psycopg.types.json import Json
 from psycopg.adapt import Loader
 
@@ -63,6 +65,10 @@ def make_random_table(opt: Namespace) -> None:
                     cur.execute("vacuum analyze test_jsonb")
 
         ensure_jsonb_bytea_cast(conn)
+        try:
+            conn.execute("create extension if not exists ubjson")
+        except psycopg.DatabaseError as ex:
+            logger.warning("failed to create ubjson extension: %s", ex)
 
 
 def main() -> None:
@@ -76,6 +82,7 @@ def main() -> None:
             "orjson": "select data from test_jsonb",
             "bytea": "select data::bytea from test_jsonb",
             "jsonb-disk": "select data::bytea from test_jsonb",
+            "ubjson": "select data::ubjson from test_jsonb",
         }
         timings = defaultdict(list)
 
@@ -105,6 +112,12 @@ def main() -> None:
             cur.execute("select data from test_jsonb")
             logger.info(f"number of records: {nrecs}, table size {size}")
 
+            ubjson_info = TypeInfo.fetch(conn, "ubjson")
+            if ubjson_info:
+                conn.adapters.types.add(ubjson_info)
+            else:
+                logger.warning("ubjson extension not found, not including it")
+
             for i in range(3):
                 cur = conn.cursor()
                 test(cur, "jsonb")
@@ -119,6 +132,11 @@ def main() -> None:
                 cur = conn.cursor(binary=True)
                 cur.adapters.register_loader("bytea", JsonbByteaLoader)
                 test(cur, "jsonb-disk")
+
+                if ubjson_info:
+                    cur = conn.cursor(binary=True)
+                    cur.adapters.register_loader("ubjson", UBJsonBinaryLoader)
+                    test(cur, "ubjson")
 
     bests = sorted(
         (min(t2 - t0 for t0, _, t2 in timings[title]), title)
@@ -141,6 +159,15 @@ class ORJsonLoader(Loader):
         if isinstance(data, memoryview):
             data = bytes(data)
         return orjson.loads(data)
+
+
+class UBJsonBinaryLoader(Loader):
+    format = Format.BINARY
+
+    def load(self, data: bytes) -> Any:
+        if data[0] != 2:
+            raise psycopg.DataError(f"bad ubjson version number: {data[0]}")
+        return ubjson.loadb(data[1:])
 
 
 def parse_cmdline() -> Namespace:
