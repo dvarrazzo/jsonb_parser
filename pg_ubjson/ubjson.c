@@ -4,13 +4,15 @@
 #include "lib/stringinfo.h"
 #include "libpq/pqformat.h"
 #include "utils/jsonb.h"
+#include "ubjson_numeric.h"
 
 PG_MODULE_MAGIC;
 
 
+static void jsonb_send_ubjson(StringInfo out, JsonbContainer *in, int estimated_len);
 static void ubjson_put_value(StringInfo out, JsonbValue *scalarVal);
 static void ubjson_put_string(StringInfo out, JsonbValue *scalarVal);
-static void jsonb_send_ubjson(StringInfo out, JsonbContainer *in, int estimated_len);
+static void ubjson_put_numeric(StringInfo out, JsonbValue *scalarVal);
 
 
 PG_FUNCTION_INFO_V1(ubjson_recv);
@@ -42,6 +44,7 @@ ubjson_send(PG_FUNCTION_ARGS)
 	StringInfo	jtext = makeStringInfo();
 	int			version = 2;
 
+	/* TODO: varsize is probably a gross overestimation? */
 	(void) jsonb_send_ubjson(jtext, &jb->root, VARSIZE(jb));
 
 	pq_begintypsend(&buf);
@@ -62,7 +65,6 @@ jsonb_send_ubjson(StringInfo out, JsonbContainer *in, int estimated_len)
 	bool		redo_switch = false;
 	bool		raw_scalar = false;
 
-	/* TODO: overestimation? */
 	enlargeStringInfo(out, (estimated_len >= 0) ? estimated_len : 64);
 
 	it = JsonbIteratorInit(in);
@@ -122,8 +124,41 @@ jsonb_send_ubjson(StringInfo out, JsonbContainer *in, int estimated_len)
 
 
 void
+ubjson_put_value(StringInfo out, JsonbValue *scalarVal)
+{
+	switch (scalarVal->type)
+	{
+		case jbvNull:
+			appendStringInfoCharMacro(out, 'Z');
+			break;
+
+		case jbvString:
+			appendStringInfoCharMacro(out, 'S');
+			ubjson_put_string(out, scalarVal);
+			break;
+
+		case jbvNumeric:
+			ubjson_put_numeric(out, scalarVal);
+			break;
+
+		case jbvBool:
+			if (scalarVal->val.boolean)
+				appendStringInfoCharMacro(out, 'T');
+			else
+				appendStringInfoCharMacro(out, 'F');
+			break;
+
+		default:
+			elog(ERROR, "unknown jsonb scalar type");
+	}
+}
+
+void
 ubjson_put_string(StringInfo out, JsonbValue *scalarVal)
 {
+	/* Note:
+	 * don't add the 'S' token, so the function can be used for object keys.
+	 */
 	if (scalarVal->val.string.len < 256) {
 		appendStringInfoCharMacro(out, 'U');
 		appendStringInfoCharMacro(out, (uint8)scalarVal->val.string.len);
@@ -139,32 +174,13 @@ ubjson_put_string(StringInfo out, JsonbValue *scalarVal)
 	appendBinaryStringInfo(out, scalarVal->val.string.val, scalarVal->val.string.len);
 }
 
+
 void
-ubjson_put_value(StringInfo out, JsonbValue *scalarVal)
+ubjson_put_numeric(StringInfo out, JsonbValue *scalarVal)
 {
-	switch (scalarVal->type)
-	{
-		case jbvNull:
-			appendStringInfoCharMacro(out, 'Z');
-			break;
+	Numeric num = DatumGetNumeric(PointerGetDatum(scalarVal->val.numeric));
 
-		case jbvString:
-			appendStringInfoCharMacro(out, 'S');
-			ubjson_put_string(out, scalarVal);
-			break;
-
-		case jbvNumeric:
-			elog(ERROR, "TODO: numeric");
-			break;
-
-		case jbvBool:
-			if (scalarVal->val.boolean)
-				appendStringInfoCharMacro(out, 'T');
-			else
-				appendStringInfoCharMacro(out, 'F');
-			break;
-
-		default:
-			elog(ERROR, "unknown jsonb scalar type");
-	}
+	/* This function should be implemented in utils/adt/numeric.c as it
+	 * uses the private Decimal data */
+	numeric_append_ubjson(out, num);
 }

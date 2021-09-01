@@ -120,6 +120,10 @@ def main() -> None:
                 logger.warning("ubjson extension not found, not including it")
 
             for i in range(3):
+                # Jsonb sent as varlena, not parsed
+                cur = conn.cursor(binary=True)
+                test(cur, "bytea")
+
                 # Jsonb sent as text, not parsed
                 cur = conn.cursor()
                 cur.adapters.register_loader("jsonb", UnparsedLoader)
@@ -133,10 +137,6 @@ def main() -> None:
                 cur = conn.cursor()
                 cur.adapters.register_loader("jsonb", ORJsonLoader)
                 test(cur, "orjson")
-
-                # Jsonb sent as varlena, not parsed
-                cur = conn.cursor(binary=True)
-                test(cur, "bytea")
 
                 # Jsonb sent as varlena, parsed on the client
                 cur = conn.cursor(binary=True)
