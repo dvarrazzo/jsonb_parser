@@ -42,7 +42,12 @@ def make_random_table(opt: Namespace) -> None:
             if opt.make_random is not None:
                 if nrecs < opt.make_random:
                     logger.info(f"adding {opt.make_random - nrecs} records")
-                    faker = JsonFaker(contchance=0.25)
+                    faker = JsonFaker(
+                        contchance=opt.contchance,
+                        contmax=opt.contmax,
+                        strmax=opt.strmax,
+                        keymax=opt.keymax,
+                    )
                     for i in range(opt.make_random - nrecs):
                         j = faker.random_container()
                         cur.execute(
@@ -188,12 +193,43 @@ class UnparsedLoader(Loader):
 
 def parse_cmdline() -> Namespace:
     parser = ArgumentParser(description=__doc__)
-    parser.add_argument(
+    g = parser.add_argument_group("Random data generation")
+    g.add_argument(
         "--make-random",
         metavar="SIZE",
         type=int,
         help="create a random table with SIZE random values",
     )
+
+    g.add_argument(
+        "--contchance",
+        metavar="PCT",
+        type=float,
+        default=0.25,
+        help="likelyhood to create a json container [defualt: %(default)s]",
+    )
+    g.add_argument(
+        "--contmax",
+        metavar="NUM",
+        type=int,
+        default=100,
+        help="maximum size for json containers [defualt: %(default)s]",
+    )
+    g.add_argument(
+        "--strmax",
+        metavar="NUM",
+        type=int,
+        default=100,
+        help="maximum size for strings [defualt: %(default)s]",
+    )
+    g.add_argument(
+        "--keymax",
+        metavar="NUM",
+        type=int,
+        default=50,
+        help="maximum length of object keys [defualt: %(default)s]",
+    )
+
     parser.add_argument(
         "--dsn", default="", help="where to connect [default: %(default)r]"
     )
