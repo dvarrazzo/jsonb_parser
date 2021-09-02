@@ -73,11 +73,11 @@ void numeric_append_ubjson(StringInfo out, Numeric num)
 		}
 		else if (len <= PG_INT16_MAX) {
 			appendStringInfoCharMacro(out, 'I');
-			appendStringInfoCharMacro(out, (int16)len);
+			pq_sendint16(out, (int16)len);
 		}
 		else {
 			appendStringInfoCharMacro(out, 'l');
-			appendStringInfoCharMacro(out, (int32)len);
+			pq_sendint32(out, (int32)len);
 		}
 		appendBinaryStringInfo(out, str, len);
 
