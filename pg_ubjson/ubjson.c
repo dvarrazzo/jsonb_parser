@@ -159,11 +159,11 @@ ubjson_put_string(StringInfo out, JsonbValue *scalarVal)
 	/* Note:
 	 * don't add the 'S' token, so the function can be used for object keys.
 	 */
-	if (scalarVal->val.string.len < 256) {
+	if (scalarVal->val.string.len <= PG_UINT8_MAX) {
 		appendStringInfoCharMacro(out, 'U');
 		appendStringInfoCharMacro(out, (uint8)scalarVal->val.string.len);
 	}
-	else if (scalarVal->val.string.len <  32768) {
+	else if (scalarVal->val.string.len <= PG_INT16_MAX) {
 		appendStringInfoCharMacro(out, 'I');
 		pq_writeint16(out, (uint16)scalarVal->val.string.len);
 	}
