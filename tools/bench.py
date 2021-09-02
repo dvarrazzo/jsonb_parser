@@ -83,12 +83,13 @@ def main() -> None:
     with psycopg.connect(opt.dsn, autocommit=True) as conn:
 
         queries = {
-            "unparsed": "select data from test_jsonb",
+            "jsonb-unparsed": "select data from test_jsonb",
             "jsonb": "select data from test_jsonb",
             "orjson": "select data from test_jsonb",
             "bytea": "select data::bytea from test_jsonb",
             "jsonb-disk": "select data::bytea from test_jsonb",
             "ubjson": "select data::ubjson from test_jsonb",
+            "ubjson-unparsed": "select data::ubjson from test_jsonb",
         }
         timings = defaultdict(list)
 
@@ -132,7 +133,7 @@ def main() -> None:
                 # Jsonb sent as text, not parsed
                 cur = conn.cursor()
                 cur.adapters.register_loader("jsonb", UnparsedLoader)
-                test(cur, "unparsed")
+                test(cur, "jsonb-unparsed")
 
                 # Jsonb sent as text, parsed with stdlib json
                 cur = conn.cursor()
@@ -153,6 +154,10 @@ def main() -> None:
                     cur = conn.cursor(binary=True)
                     cur.adapters.register_loader("ubjson", UBJsonBinaryLoader)
                     test(cur, "ubjson")
+
+                    # Jsonb sent as ubjson, not parsed on the client
+                    cur = conn.cursor(binary=True)
+                    test(cur, "ubjson-unparsed")
 
     bests = sorted(
         (min(t2 - t0 for t0, _, t2 in timings[title]), title)
